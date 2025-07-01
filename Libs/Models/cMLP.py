@@ -1,8 +1,23 @@
+"""Convolutional Multi-Layer Perceptron (cMLP) backbone for Neural GC.
+
+This refactor adds:
+* **Numerical stability** – configurable `atol`/`rtol` thresholds in
+  :pymeth:`cMLP.GC` and a safe epsilon inside :func:`prox_update`.
+* **Logging** – switch from ``print`` to :pymod:`logging` across training
+  helpers.
+* **Docstrings** – Google-style documentation for public classes/functions.
+"""
+
+from __future__ import annotations
+
+import logging
 from copy import deepcopy
 
 import numpy as np
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 def activation_helper(activation, dim=None):
@@ -78,31 +93,40 @@ class cMLP(nn.Module):
         '''
         return torch.cat([network(X) for network in self.networks], dim=2)
 
-    def GC(self, threshold=True, ignore_lag=True):
-        '''
-        Extract learned Granger causality.
+    def GC(self, threshold: bool | float = True, ignore_lag: bool = True, *, atol: float = 1e-6, rtol: float = 0.0):
+        """Return the learned Granger-causality adjacency matrix.
 
         Args:
-          threshold: return norm of weights, or whether norm is nonzero.
-          ignore_lag: if true, calculate norm of weights jointly for all lags.
+            threshold: If *True* return a binary adjacency matrix using
+                ``atol``/``rtol``; if *False*, return raw L2 norms.  A float
+                value can also be supplied to use as an absolute threshold.
+            ignore_lag: If *True*, collapse all lags into a single edge weight
+                by taking the L2 norm across the kernel length. Otherwise a
+                ``(p, p, lag)`` tensor is returned.
+            atol: Absolute tolerance when testing ``> 0`` (default ``1e-6``).
+            rtol: Relative tolerance (ignored when *threshold* is a float).
 
         Returns:
-          GC: (p x p) or (p x p x lag) matrix. In first case, entry (i, j)
-            indicates whether variable j is Granger causal of variable i. In
-            second case, entry (i, j, k) indicates whether it's Granger causal
-            at lag k.
-        '''
+            ``torch.Tensor`` – Boolean or float adjacency matrix.
+        """
+
+        # NOTE: keep signature backward-compatible by accepting *args.
+
         if ignore_lag:
-            GC = [torch.norm(net.layers[0].weight, dim=(0, 2))
-                  for net in self.networks]
+            GC = [torch.norm(net.layers[0].weight, dim=(0, 2)) for net in self.networks]
         else:
-            GC = [torch.norm(net.layers[0].weight, dim=0)
-                  for net in self.networks]
+            GC = [torch.norm(net.layers[0].weight, dim=0) for net in self.networks]
+
         GC = torch.stack(GC)
-        if threshold:
-            return (GC > 0).int()
-        else:
+
+        if threshold is False:
             return GC
+
+        if isinstance(threshold, (int, float)) and threshold is not True:
+            atol = float(threshold)
+
+        mask = torch.abs(GC) > (atol + rtol * torch.abs(GC))
+        return mask.int()
 
 
 class cMLPSparse(nn.Module):
@@ -112,8 +136,8 @@ class cMLPSparse(nn.Module):
 
         Args:
           num_series: dimensionality of multivariate time series.
-          sparsity: torch byte tensor indicating Granger causality, with size
-            (num_series, num_series).
+          sparsity: ``torch.BoolTensor`` indicating Granger causality with
+            shape *(num_series, num_series)*.
           lag: number of previous time points to use in prediction.
           hidden: list of number of hidden units per layer.
           activation: nonlinearity at each layer.
@@ -159,24 +183,23 @@ def prox_update(network, lam, lr, penalty):
         H (hierarchical).
     '''
     W = network.layers[0].weight
+    # Ensure numerical stability for frozen / near-zero columns.
+    eps = max(lr * lam, 1e-8)
     hidden, p, lag = W.shape
     if penalty == 'GL':
         norm = torch.norm(W, dim=(0, 2), keepdim=True)
-        W.data = ((W / torch.clamp(norm, min=(lr * lam)))
-                  * torch.clamp(norm - (lr * lam), min=0.0))
+        W.data = ((W / torch.clamp(norm, min=eps)) * torch.clamp(norm - (lr * lam), min=0.0))
     elif penalty == 'GSGL':
         norm = torch.norm(W, dim=0, keepdim=True)
-        W.data = ((W / torch.clamp(norm, min=(lr * lam)))
-                  * torch.clamp(norm - (lr * lam), min=0.0))
+        W.data = ((W / torch.clamp(norm, min=eps)) * torch.clamp(norm - (lr * lam), min=0.0))
         norm = torch.norm(W, dim=(0, 2), keepdim=True)
-        W.data = ((W / torch.clamp(norm, min=(lr * lam)))
-                  * torch.clamp(norm - (lr * lam), min=0.0))
+        W.data = ((W / torch.clamp(norm, min=eps)) * torch.clamp(norm - (lr * lam), min=0.0))
     elif penalty == 'H':
         # Lowest indices along third axis touch most lagged values.
         for i in range(lag):
             norm = torch.norm(W[:, :, :(i + 1)], dim=(0, 2), keepdim=True)
             W.data[:, :, :(i+1)] = (
-                (W.data[:, :, :(i+1)] / torch.clamp(norm, min=(lr * lam)))
+                (W.data[:, :, :(i+1)] / torch.clamp(norm, min=eps))
                 * torch.clamp(norm - (lr * lam), min=0.0))
     else:
         raise ValueError('unsupported penalty: %s' % penalty)

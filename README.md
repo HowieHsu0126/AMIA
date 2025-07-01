@@ -7,14 +7,8 @@
 ---
 
 ## 1. Project Overview
-This repository hosts the official implementation of our AMIA 2024 paper &nbsp;**"Neural Granger Causal Discovery for Acute Kidney Injury-Associated Derangements."**  
+This repository hosts the official implementation of our [AMIA 2024 paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC12099353/) &nbsp;**"Neural Granger Causal Discovery for Acute Kidney Injury-Associated Derangements."**  
 The project applies differentiable Granger causality to learn directed temporal graphs among intensive-care variables in the MIMIC-IV database, with a spotlight on derangements related to acute kidney injury (AKI).
-
-Key contributions:
-* Convolutional **cMLP / cLSTM / cRNN** implementations of Neural-GC.  
-* **SQL** pipelines for fully reproducible extraction of raw data from MIMIC-IV.  
-* **Python preprocessing utilities** for resampling, masking and memory optimisation.  
-* End-to-end **Jupyter notebooks** that replicate every figure and table reported in the manuscript.
 
 ---
 
@@ -113,7 +107,7 @@ merge_csv_based_on_aki_id(
 
 # 3 – hourly resampling & masking (24 h window shown)
 resample_and_mask(
-    iutput_file_path="Input/processed/dataset.csv",
+    input_file_path="Input/processed/dataset.csv",
     output_file_path="Input/processed/dataset_1h.csv",
     verbose=True,
 )
@@ -136,6 +130,20 @@ X  = torch.tensor(df.values, dtype=torch.float32)
 X  = X.view(-1, 24, X.shape[-1])
 
 torch.save(X, "Input/processed/tensor.pt")
+```
+
+Alternatively you can keep all hyper-parameters in a single YAML file and load
+them via:
+
+```python
+from Libs.Utils.config import load_config
+
+cfg   = load_config("config/train.yml")
+model = cMLP(
+    num_series=cfg["data"]["p"],
+    lag=cfg["data"]["lag"],
+    hidden=cfg["model"]["hidden"],
+)
 ```
 
 ---
@@ -196,7 +204,7 @@ If you use this code in your research, please cite:
 ```bibtex
 @inproceedings{xu2024ngcaki,
   title     = {Neural Granger Causal Discovery for Acute Kidney Injury-Associated Derangements},
-  author    = {Xu, Huaiwei and et al.},
+  author    = {Haowei Xu, Wentie Liu, Tongyue Shi and Guilan Kong},
   booktitle = {AMIA Annual Symposium},
   year      = {2024}
 }
@@ -210,4 +218,4 @@ This project is distributed under the **MIT License**. See [LICENSE](LICENSE) fo
 ---
 
 ## 12. Contact
-For questions, please open an [issue](https://github.com/your_username/your_repo/issues) or email **huaiwen.xu@pku.edu.cn**.
+For questions, please open an issue or email **haoweixu@stu.pku.edu.cn**.

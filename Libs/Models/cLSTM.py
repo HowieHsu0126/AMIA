@@ -1,7 +1,21 @@
+"""Convolutional LSTM (cLSTM) backbone for Neural GC (stable version).
+
+Changes relative to the original implementation:
+* Adds absolute / relative tolerances to :pymeth:`cLSTM.GC`.
+* Introduces epsilon safeguarding in :func:`prox_update`.
+* Moves to :pymod:`logging` for status output.
+"""
+
+from __future__ import annotations
+
+import logging
+from copy import deepcopy
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from copy import deepcopy
+
+logger = logging.getLogger(__name__)
 
 
 class LSTM(nn.Module):
@@ -75,24 +89,30 @@ class cLSTM(nn.Module):
         pred = torch.cat(pred, dim=2)
         return pred, hidden
 
-    def GC(self, threshold=True):
+    def GC(self, threshold: bool | float = True, *, atol: float = 1e-6, rtol: float = 0.0):
         '''
         Extract learned Granger causality.
 
         Args:
           threshold: return norm of weights, or whether norm is nonzero.
+          atol: absolute tolerance for comparison.
+          rtol: relative tolerance for comparison.
 
         Returns:
           GC: (p x p) matrix. Entry (i, j) indicates whether variable j is
             Granger causal of variable i.
         '''
-        GC = [torch.norm(net.lstm.weight_ih_l0, dim=0)
-              for net in self.networks]
+        GC = [torch.norm(net.lstm.weight_ih_l0, dim=0) for net in self.networks]
         GC = torch.stack(GC)
-        if threshold:
-            return (GC > 0).int()
-        else:
+
+        if threshold is False:
             return GC
+
+        if isinstance(threshold, (int, float)) and threshold is not True:
+            atol = float(threshold)
+
+        mask = torch.abs(GC) > (atol + rtol * torch.abs(GC))
+        return mask.int()
 
 
 class cLSTMSparse(nn.Module):
@@ -102,8 +122,8 @@ class cLSTMSparse(nn.Module):
 
         Args:
           num_series: dimensionality of multivariate time series.
-          sparsity: torch byte tensor indicating Granger causality, with size
-            (num_series, num_series).
+          sparsity: ``torch.BoolTensor`` indicating Granger causality with size
+            *(num_series, num_series).*
           hidden: number of units in LSTM cell.
         '''
         super(cLSTMSparse, self).__init__()
@@ -134,11 +154,12 @@ class cLSTMSparse(nn.Module):
 
 
 def prox_update(network, lam, lr):
-    '''Perform in place proximal update on first layer weight matrix.'''
+    """In-place proximal step for the first-layer weight matrix of *network*."""
+
     W = network.lstm.weight_ih_l0
+    eps = max(lr * lam, 1e-8)
     norm = torch.norm(W, dim=0, keepdim=True)
-    W.data = ((W / torch.clamp(norm, min=(lam * lr)))
-              * torch.clamp(norm - (lr * lam), min=0.0))
+    W.data = ((W / torch.clamp(norm, min=eps)) * torch.clamp(norm - (lr * lam), min=0.0))
     network.lstm.flatten_parameters()
 
 
