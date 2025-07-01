@@ -89,7 +89,15 @@ def resample_and_mask(
     if id_col is None:
         raise KeyError("No ID column (stay_id/admission_id/hadm_id) found in input CSV")
 
-    # Setting the 'hour' column as index along with the detected ID column
+    # ------------------------------------------------------------------
+    # Collapse potential duplicates BEFORE pivot to keep memory low ------
+    # ------------------------------------------------------------------
+    timeseries = (
+        timeseries
+        .groupby([id_col, 'hour'], as_index=False)
+        .mean()   # aggregate numeric cols
+    )
+
     timeseries.set_index([id_col, 'hour'], inplace=True)
 
     # Take the mean of any duplicate index entries for unstacking
@@ -372,23 +380,51 @@ def merge_all_csv(
     log_level = logging.INFO if verbose else logging.DEBUG
     _log = logger.log
 
-    frames: list[pd.DataFrame] = []
+    # Keys we expect in all per-concept files
+    key_candidates = ["stay_id", "hadm_id", "admission_id", "hour"]
+
+    base_df: pd.DataFrame | None = None
     for fp in csv_files:
         if fp.name.lower() == "aki.csv":
-            # Skip AKI label file – handled separately.
             _log(log_level, "Skipping label file: %s", fp)
             continue
-        _log(log_level, "Reading %s", fp)
-        frames.append(pd.read_csv(fp))
 
-    if not frames:
-        logger.warning("No data files loaded – aborting merge step.")
+        _log(log_level, "Reading %s", fp)
+        df = pd.read_csv(fp)
+
+        # Determine join keys present in this DF
+        join_keys = [c for c in key_candidates if c in df.columns]
+        if "hour" not in df.columns:
+            raise KeyError(f"File {fp} is missing mandatory key 'hour'.")
+
+        feature_cols = [c for c in df.columns if c not in join_keys]
+
+        # Ensure unique feature names across files by suffixing with filename stem when needed
+        col_rename = {}
+        for fc in feature_cols:
+            if base_df is not None and fc in base_df.columns:
+                col_rename[fc] = f"{fc}_{fp.stem}"
+        if col_rename:
+            df = df.rename(columns=col_rename)
+
+        if base_df is None:
+            base_df = df
+        else:
+            # Determine common join keys between current base and new frame
+            common_keys = ["hour"] + [k for k in key_candidates if k in base_df.columns and k in df.columns]
+            base_df = base_df.merge(df, on=common_keys, how="outer")
+
+    if base_df is None:
+        logger.warning("No data merged – aborting.")
         return
 
-    merged = pd.concat(frames, ignore_index=True).drop_duplicates()
-    _log(log_level, "Merged shape: %s", merged.shape)
+    # Drop duplicate rows (same keys & identical features)
+    before = len(base_df)
+    base_df = base_df.drop_duplicates()
+    after = len(base_df)
+    _log(log_level, "Final merged shape: %s (deduped %.1f%% rows)", base_df.shape, 100*(before-after)/before if before else 0)
 
     output_file_path.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_csv(output_file_path, index=False)
+    base_df.to_csv(output_file_path, index=False)
 
     logger.info("Merged CSV saved to %s", output_file_path)
