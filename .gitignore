@@ -1,0 +1,6 @@
+Input/
+Output/
+GC.ipynb
+*.pyc
+*.json
+*.csv
