@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from typing import Union
 
 import numpy as np
 import torch
@@ -93,7 +94,7 @@ class cMLP(nn.Module):
         '''
         return torch.cat([network(X) for network in self.networks], dim=2)
 
-    def GC(self, threshold: bool | float = True, ignore_lag: bool = True, *, atol: float = 1e-6, rtol: float = 0.0):
+    def GC(self, threshold: Union[bool, float] = True, ignore_lag: bool = True, *, atol: float = 1e-6, rtol: float = 0.0):
         """Return the learned Granger-causality adjacency matrix.
 
         Args:

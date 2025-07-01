@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from typing import Union
 
 import numpy as np
 import torch
@@ -89,7 +90,7 @@ class cLSTM(nn.Module):
         pred = torch.cat(pred, dim=2)
         return pred, hidden
 
-    def GC(self, threshold: bool | float = True, *, atol: float = 1e-6, rtol: float = 0.0):
+    def GC(self, threshold: Union[bool, float] = True, *, atol: float = 1e-6, rtol: float = 0.0):
         '''
         Extract learned Granger causality.
 
