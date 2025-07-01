@@ -1,14 +1,12 @@
-# Neural Granger Causal Discovery for Acute Kidney Injury-Associated Derangements (NGC-AKI)
+# Neural Granger Causal Discovery for Derangements in ICU-Acquired Acute Kidney Injury Patients
 
-[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)  
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-lightgrey)](https://pytorch.org/)  
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
+[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)  [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-lightgrey)](https://pytorch.org/)  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
 
 ---
 
 ## 1. Project Overview
 
-This repository hosts the official implementation of our [AMIA 2024 paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC12099353/) &nbsp;**"Neural Granger Causal Discovery for Acute Kidney Injury-Associated Derangements."**  
+This repository hosts the official implementation of our [AMIA 2024 paper](https://pmc.ncbi.nlm.nih.gov/articles/PMC12099353/) &nbsp;**"Neural Granger Causal Discovery for Derangements in ICU-Acquired Acute Kidney Injury Patients".**  
 The project applies differentiable Granger causality to learn directed temporal graphs among intensive-care variables in the MIMIC-IV database, with a spotlight on derangements related to acute kidney injury (AKI).
 
 ---
