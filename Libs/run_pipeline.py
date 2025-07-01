@@ -185,6 +185,11 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
 
     df = pd.read_csv(dataset_reduced_csv)
 
+    # Drop identifier columns that should not be treated as input features
+    for id_col in ["patient_id", "stay_id", "admission_id", "hadm_id"]:
+        if id_col in df.columns:
+            df = df.drop(columns=[id_col])
+
     # Ensure numerical tensor – coerce non‐numeric to NaN then fill with 0
     df_numeric = df.apply(pd.to_numeric, errors="coerce").fillna(0.0)
     if (df_numeric.dtypes == np.object_).any():

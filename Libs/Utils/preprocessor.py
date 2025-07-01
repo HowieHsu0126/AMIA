@@ -80,8 +80,17 @@ def resample_and_mask(
 
     if verbose:
         _log(level, "Resampling to 1-hour intervals …")
-    # Setting the 'hour' column as index along with 'stay_id'
-    timeseries.set_index(['stay_id', 'hour'], inplace=True)
+    # Identify the ID column dynamically (stay_id, admission_id, hadm_id)
+    id_col = None
+    for cand in ["stay_id", "admission_id", "hadm_id"]:
+        if cand in timeseries.columns:
+            id_col = cand
+            break
+    if id_col is None:
+        raise KeyError("No ID column (stay_id/admission_id/hadm_id) found in input CSV")
+
+    # Setting the 'hour' column as index along with the detected ID column
+    timeseries.set_index([id_col, 'hour'], inplace=True)
 
     # Take the mean of any duplicate index entries for unstacking
     timeseries = timeseries.groupby(level=[0, 1]).mean()
@@ -111,7 +120,8 @@ def resample_and_mask(
     resampled = resampled.stack(level=1).swaplevel(0, 1).sort_index(level=0)
     
     resampled.reset_index(inplace=True)
-    resampled = resampled.rename(columns={"level_1": "hour"})
+    # After reset_index the stacked level gets named 'level_1'; rename for clarity
+    resampled = resampled.rename(columns={"level_1": "hour", id_col: "patient_id"})
     
     _log(level, "Writing resampled CSV to: %s", output_file_path)
     resampled.to_csv(output_file_path)
@@ -191,8 +201,14 @@ def merge_csv_based_on_aki_id(
                 return col
         raise KeyError("ID column not found in AKI_ID file")
 
-    id_col = _get_id_column(aki_id_df)
-    filtered_stay_ids = set(aki_id_df[id_col])
+    # Build mapping of ID column ➜ allowed values --------------------------
+    id_sets: dict[str, set] = {}
+    for cand in ["stay_id", "hadm_id", "admission_id"]:
+        if cand in aki_id_df.columns:
+            id_sets[cand] = set(aki_id_df[cand].dropna())
+
+    if not id_sets:
+        raise KeyError("No recognised ID columns found in AKI label file")
 
     # 初始化一个空的DataFrame用于合并数据
     merged_df = pd.DataFrame()
@@ -210,9 +226,13 @@ def merge_csv_based_on_aki_id(
             continue
         df = pd.read_csv(file_path)
         
-        # 过滤数据，只保留存在于AKI_ID.csv中的stay_id的行
+        # 过滤数据，只保留存在于 AKI 标签文件中相对应 ID 列的行
         id_col_curr = _get_id_column(df)
-        filtered_df = df[df[id_col_curr].isin(filtered_stay_ids)]
+        if id_col_curr not in id_sets:
+            logger.debug("ID column %s not present in AKI file – skipping file %s", id_col_curr, file_path)
+            continue
+        target_ids = id_sets[id_col_curr]
+        filtered_df = df[df[id_col_curr].isin(target_ids)]
 
         # 将过滤后的数据添加到合并的DataFrame中
         merged_df = pd.concat([merged_df, filtered_df], ignore_index=True)
