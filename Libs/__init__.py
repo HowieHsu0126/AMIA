@@ -35,33 +35,21 @@ if not _root_logger.handlers:
     _root_logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
-# Convenience sub-package imports (optional) --------------------------------
-# ---------------------------------------------------------------------------
-# Lazily expose sub-modules so that they can be accessed as attributes, e.g.:
-# >>> import Libs
-# >>> Libs.Models.cMLP
-# This avoids importing heavy dependencies at package import time.
+# Eager import sub-packages to avoid recursion issues ------------------------
 # ---------------------------------------------------------------------------
 
-import importlib
+import importlib as _imp
 
-class _LazyModule(ModuleType):
-    """Lazy loader for sub-packages to keep import times minimal."""
 
-    def __init__(self, name: str):
-        super().__init__(name)
-        self.__dict__["_module_name"] = name
+def _eager_import(name: str):
+    """Import *name* and return the module object; guarantees real module."""
+    module = _imp.import_module(name)
+    sys.modules[name] = module
+    return module
 
-    def _load(self):
-        module = importlib.import_module(self.__dict__["_module_name"])
-        self.__dict__.update(module.__dict__)
-        return module
 
-    def __getattr__(self, item):
-        module = self._load()
-        return getattr(module, item)
+Models = _eager_import("Libs.Models")
+Utils = _eager_import("Libs.Utils")
+Data = _eager_import("Libs.Data")
 
-# Expose sub-packages lazily
-import sys as _sys
-for _sub in ("Libs.Models", "Libs.Utils", "Libs.Data"):
-    _sys.modules[_sub] = _LazyModule(_sub) 
+__all__ = ["Models", "Utils", "Data"] 

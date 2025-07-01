@@ -134,19 +134,29 @@ def find_stay_id_intersection(directory_path: Union[str, Path], output_file_path
         logger.warning("目录中没有CSV文件: %s", directory_path)
         return
 
+    # Helper to identify ID column -------------------------------------------------
+    def _get_id_column(df: pd.DataFrame) -> str:
+        candidates = ["stay_id", "admission_id", "hadm_id"]
+        for col in candidates:
+            if col in df.columns:
+                return col
+        raise KeyError(
+            f"None of the expected ID columns {candidates} found in {df.columns.tolist()}"
+        )
+
     # 读取第一个CSV文件并初始化交集集合
-    first_file_path = os.path.join(directory_path, csv_files[0])
-    first_df = pd.read_csv(first_file_path)
-    intersection_set = set(first_df['stay_id'])
+    first_df = pd.read_csv(csv_files[0])
+    id_col = _get_id_column(first_df)
+    intersection_set = set(first_df[id_col])
 
     # 遍历其余的CSV文件
-    for file in csv_files[1:]:
-        file_path = os.path.join(directory_path, file)
+    for file_path in csv_files[1:]:
         df = pd.read_csv(file_path)
-        intersection_set = intersection_set.intersection(set(df['stay_id']))
+        id_col_curr = _get_id_column(df)
+        intersection_set = intersection_set.intersection(set(df[id_col_curr]))
 
     # 将交集集合转换为DataFrame
-    aki_id_df = pd.DataFrame(list(intersection_set), columns=['stay_id'])
+    aki_id_df = pd.DataFrame(list(intersection_set), columns=[id_col])
 
     # 保存为CSV文件
     aki_id_df.to_csv(output_file_path, index=False)
@@ -172,9 +182,17 @@ def merge_csv_based_on_aki_id(
     aki_id_file_path (str): AKI_ID.csv文件的路径，包含过滤后的stay_id。
     output_file_path (str): 合并后的CSV文件的保存路径。
     """
-    # 读取AKI_ID.csv获取过滤后的stay_id列表
     aki_id_df = pd.read_csv(aki_id_file_path)
-    filtered_stay_ids = set(aki_id_df['stay_id'])
+
+    def _get_id_column(df: pd.DataFrame) -> str:
+        candidates = ["stay_id", "admission_id", "hadm_id"]
+        for col in candidates:
+            if col in df.columns:
+                return col
+        raise KeyError("ID column not found in AKI_ID file")
+
+    id_col = _get_id_column(aki_id_df)
+    filtered_stay_ids = set(aki_id_df[id_col])
 
     # 初始化一个空的DataFrame用于合并数据
     merged_df = pd.DataFrame()
@@ -185,12 +203,16 @@ def merge_csv_based_on_aki_id(
     logger.info("Files to be processed: %s", csv_files)
 
     # 遍历CSV文件
-    for file in csv_files:
-        file_path = os.path.join(directory_path, file)
+    for file_path in csv_files:
+        # Skip the label file itself if present in *directory_path*
+        if file_path.name.lower() == "aki.csv":
+            logger.debug("Skipping label file during data merge: %s", file_path)
+            continue
         df = pd.read_csv(file_path)
         
         # 过滤数据，只保留存在于AKI_ID.csv中的stay_id的行
-        filtered_df = df[df['stay_id'].isin(filtered_stay_ids)]
+        id_col_curr = _get_id_column(df)
+        filtered_df = df[df[id_col_curr].isin(filtered_stay_ids)]
 
         # 将过滤后的数据添加到合并的DataFrame中
         merged_df = pd.concat([merged_df, filtered_df], ignore_index=True)
@@ -277,3 +299,61 @@ def reduce_mem_usage(
     df.to_csv(output_path, index=False)
     
     logger.info("Processed data saved to %s", output_path)
+
+def merge_all_csv(
+    directory_path: Union[str, Path],
+    output_file_path: Union[str, Path],
+    *,
+    verbose: bool = True,
+) -> None:
+    """Merge **all** CSV files within *directory_path* into a single file.
+
+    The function performs an outer concatenation (``pd.concat``) of all CSVs
+    located directly under *directory_path* (non-recursive) and writes the
+    resulting table to *output_file_path*. Duplicate rows (based on *all*
+    columns) are removed while preserving the original order.
+
+    Args:
+        directory_path: Folder that contains the source ``.csv`` files.
+        output_file_path: Destination path for the merged CSV.
+        verbose: If ``True`` log an ``INFO`` message for each processed file,
+            else defer to ``DEBUG``.
+
+    Returns:
+        ``None`` – the merged dataset is persisted to *output_file_path*.
+    """
+
+    directory_path = Path(directory_path)
+    output_file_path = Path(output_file_path)
+
+    if not directory_path.is_dir():
+        raise NotADirectoryError(directory_path)
+
+    csv_files = sorted(directory_path.glob("*.csv"))
+    if not csv_files:
+        logger.warning("No CSV files found in directory: %s", directory_path)
+        return
+
+    log_level = logging.INFO if verbose else logging.DEBUG
+    _log = logger.log
+
+    frames: list[pd.DataFrame] = []
+    for fp in csv_files:
+        if fp.name.lower() == "aki.csv":
+            # Skip AKI label file – handled separately.
+            _log(log_level, "Skipping label file: %s", fp)
+            continue
+        _log(log_level, "Reading %s", fp)
+        frames.append(pd.read_csv(fp))
+
+    if not frames:
+        logger.warning("No data files loaded – aborting merge step.")
+        return
+
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates()
+    _log(log_level, "Merged shape: %s", merged.shape)
+
+    output_file_path.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(output_file_path, index=False)
+
+    logger.info("Merged CSV saved to %s", output_file_path)

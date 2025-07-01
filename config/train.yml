@@ -1,0 +1,34 @@
+# -----------------------------------------------------------------------------
+# Default configuration for pipeline
+# -----------------------------------------------------------------------------
+# Copy/modify this file for your own experiments.
+# -----------------------------------------------------------------------------
+
+sql:
+  enabled: false # set true if you have PostgreSQL + MIMIC-IV locally
+  psql_bin: psql # change if psql is not on PATH
+  conn:
+    host: localhost
+    port: 5432
+    user: postgres
+    db: mimiciv
+  script: Libs/Data/SQL/run.sql
+
+preprocess:
+  enabled: true
+  raw_dir: Input/raw/
+  processed_dir: Input/processed/
+  resample_horizon: 24 # hours to keep in each sample
+
+model:
+  backbone: cMLP # cMLP | cRNN | cLSTM
+  lag: 24 # history length (hours)
+  hidden: [128, 64]
+  training:
+    optimizer: gista # gista | adam | ista (depending on backbone)
+    max_iter: 2000
+    lr: 1e-3
+    lam: 1e-2
+    lam_ridge: 1e-3
+    penalty: H # H | GL | GSGL
+    batch_size: 32 # reserved for future mini-batch support

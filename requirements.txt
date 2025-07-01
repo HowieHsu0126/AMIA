@@ -3,4 +3,5 @@ numpy>=1.23
 pandas>=1.5
 torch>=2.0
 tqdm
-pyyaml 
+pyyaml
+psycopg2-binary 
