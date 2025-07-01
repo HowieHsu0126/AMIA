@@ -1,7 +1,8 @@
 # Core scientific stack
-numpy>=1.23
-pandas>=1.5
-torch>=2.0
+numpy>=1.24
+pandas>=2.0
+torch>=2.1
 tqdm
-pyyaml
-psycopg2-binary 
+PyYAML>=6.0
+psycopg2-binary>=2.9
+polars>=0.20 # optional, for faster preprocessing 

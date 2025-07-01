@@ -103,7 +103,14 @@ def stage_sql(cfg: Dict[str, Any]) -> None:
         if val is not None:
             conn_flags.extend([flag, str(val)])
 
-    cmd = f"{psql_bin} {' '.join(conn_flags)} -v ON_ERROR_STOP=1 -f {script_path}"
+    # ------------------------------------------------------------------
+    # Inject DATA_DIR variable for export path substitution -------------
+    # ------------------------------------------------------------------
+    data_dir = cfg.get("data_dir", "Input/raw/")  # Fallback keeps legacy default
+    cmd = (
+        f"{psql_bin} {' '.join(conn_flags)} -v ON_ERROR_STOP=1 "
+        f"-v DATA_DIR='{data_dir}' -f {script_path}"
+    )
     run_shell(cmd, env=os.environ)
 
 
@@ -304,6 +311,20 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+
+    # ------------------------------------------------------------------
+    # Resolve global I/O paths defined under cfg["paths"] --------------
+    # ------------------------------------------------------------------
+    paths_cfg = cfg.setdefault("paths", {})
+    raw_dir = paths_cfg.setdefault("raw_dir", "Input/raw/")
+    processed_dir = paths_cfg.setdefault("processed_dir", "Input/processed/")
+    sql_output_dir = paths_cfg.setdefault("sql_output_dir", raw_dir)
+
+    # Back-propagate resolved paths to stage-specific configs for legacy
+    # compatibility in case user config still uses older schema.
+    cfg.setdefault("preprocess", {}).setdefault("raw_dir", raw_dir)
+    cfg["preprocess"].setdefault("processed_dir", processed_dir)
+    cfg.setdefault("sql", {}).setdefault("data_dir", sql_output_dir)
 
     stage_sql(cfg.get("sql", {}))
     stage_preprocess(cfg.get("preprocess", {}))

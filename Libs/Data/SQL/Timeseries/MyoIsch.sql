@@ -34,4 +34,4 @@ SELECT
 FROM hourly_averages
 GROUP BY hadm_id, subject_id, hour_interval
 ORDER BY hadm_id, subject_id, hour_interval
-) TO '/home/hwxu/Projects/Dataset/PKU/AMIA/Input/raw/MyoIsch.csv' WITH CSV HEADER;
+) TO :'DATA_DIR'/MyoIsch.csv WITH CSV HEADER;

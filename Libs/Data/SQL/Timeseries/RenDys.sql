@@ -22,4 +22,4 @@ hourly_averages AS (
 SELECT admission_id, hour, BUN, creatinine
 FROM hourly_averages
 ORDER BY admission_id, hour
-) TO '/home/hwxu/Projects/Dataset/PKU/AMIA/Input/raw/RenDys.csv' WITH CSV HEADER;
+) TO :'DATA_DIR'/RenDys.csv WITH CSV HEADER;

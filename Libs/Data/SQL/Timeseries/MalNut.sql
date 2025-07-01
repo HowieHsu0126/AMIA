@@ -31,4 +31,4 @@ SELECT
     albumin
 FROM hourly_averages
 ORDER BY admission_id, hour
-) TO '/home/hwxu/Projects/Dataset/PKU/AMIA/Input/raw/MalNut.csv' WITH CSV HEADER;
+) TO :'DATA_DIR'/MalNut.csv WITH CSV HEADER;

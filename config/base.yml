@@ -1,0 +1,42 @@
+ 
+# NOTE: 任何字段都可以在自定义 yml 中覆盖；本文件提供 sane defaults。
+# ENVIRONMENT ─────────────────────────────────────────────────────────────────
+#   MIMIC_DB_CONN  可选：psql 的连接字符串，例如：
+#       export MIMIC_DB_CONN="host=localhost port=5432 user=postgres dbname=mimiciv"
+#   若未提供，则使用 sql.conn.* 字段构造 -h/-p/-U/-d 参数。
+# -----------------------------------------------------------------------------
+
+paths:
+  raw_dir: Input/raw/            # CSV files exported by SQL scripts
+  processed_dir: Input/processed/ # Tensor & intermediate artefacts
+  sql_output_dir: Input/raw/     # Where SQL COPY commands write CSV (keep与 raw_dir 一致)
+
+sql:
+  enabled: true
+  psql_bin: psql                # 可覆写 psql 路径，如 docker 镜像内
+  # 如已设置 MIMIC_DB_CONN，可省略以下字段
+  conn:
+    host: localhost
+    port: 5432
+    user: postgres
+    db: mimiciv
+  script: Libs/Data/SQL/run.sql  # master orchestrator script
+
+preprocess:
+  enabled: true
+  resample_horizon: 24           # hours
+
+model:
+  backbone: cMLP                 # {cMLP,cRNN,cLSTM}
+  lag: 24
+  hidden: [128, 64]
+  training:
+    optimizer: gista             # {gista,adam,ista}
+    max_iter: 5000
+    lr: 1e-3
+    lam: 1e-2
+    lam_ridge: 1e-3
+    penalty: H
+    batch_size: 32               # reserved for future use 
+paths:
+ 

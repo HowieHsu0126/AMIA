@@ -11,4 +11,4 @@ LEFT JOIN mimiciv_derived.urine_output uo ON ie.stay_id = uo.stay_id
 WHERE uo.charttime BETWEEN ha.admittime AND aki_time
 GROUP BY ie.hadm_id, hour
 ORDER BY ie.hadm_id, hour
-) TO '/home/hwxu/Projects/Dataset/PKU/AMIA/Input/raw/UO.csv' WITH CSV HEADER;
+) TO :'DATA_DIR'/UO.csv WITH CSV HEADER;

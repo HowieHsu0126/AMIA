@@ -38,4 +38,4 @@ SELECT
     hemoglobin
 FROM hourly_averages
 ORDER BY admission_id, hour
-) TO '/home/hwxu/Projects/Dataset/PKU/AMIA/Input/raw/O2TxpDef.csv' WITH CSV HEADER;
+) TO :'DATA_DIR'/O2TxpDef.csv WITH CSV HEADER;

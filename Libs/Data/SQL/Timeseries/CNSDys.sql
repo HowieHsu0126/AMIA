@@ -42,5 +42,5 @@ SELECT
 FROM min_gcs mg
 INNER JOIN aki_timepoints at ON mg.hadm_id = at.hadm_id
 ORDER BY mg.hadm_id, hour
-) TO '/home/hwxu/Projects/Dataset/PKU/AMIA/Input/raw/CNSDys.csv' WITH CSV HEADER;
+) TO :'DATA_DIR'/CNSDys.csv WITH CSV HEADER;
 

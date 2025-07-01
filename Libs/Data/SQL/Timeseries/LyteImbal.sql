@@ -38,4 +38,4 @@ SELECT
     chloride
 FROM hourly_averages
 ORDER BY admission_id, hour
-) TO '/home/hwxu/Projects/Dataset/PKU/AMIA/Input/raw/LyteImbal.csv' WITH CSV HEADER;
+) TO :'DATA_DIR'/LyteImbal.csv WITH CSV HEADER;
