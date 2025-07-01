@@ -228,10 +228,18 @@ def merge_csv_based_on_aki_id(
         
         # 过滤数据，只保留存在于 AKI 标签文件中相对应 ID 列的行
         id_col_curr = _get_id_column(df)
-        if id_col_curr not in id_sets:
-            logger.debug("ID column %s not present in AKI file – skipping file %s", id_col_curr, file_path)
+        if id_col_curr in id_sets:
+            target_ids = id_sets[id_col_curr]
+        # Treat admission_id and hadm_id as synonyms – fall back accordingly
+        elif id_col_curr == "admission_id" and "hadm_id" in id_sets:
+            target_ids = id_sets["hadm_id"]
+        elif id_col_curr == "hadm_id" and "admission_id" in id_sets:
+            target_ids = id_sets["admission_id"]
+        else:
+            logger.debug(
+                "ID column %s not present in AKI file – skipping file %s", id_col_curr, file_path
+            )
             continue
-        target_ids = id_sets[id_col_curr]
         filtered_df = df[df[id_col_curr].isin(target_ids)]
 
         # 将过滤后的数据添加到合并的DataFrame中
@@ -240,6 +248,13 @@ def merge_csv_based_on_aki_id(
     if 'subject_id' in merged_df.columns:
         merged_df.drop(['subject_id'], axis=1, inplace=True)
     merged_df.rename(columns={'Unnamed: 1': 'time'}, inplace=True)
+
+    # 如果结果为空则直接报错，避免生成 0 字节文件
+    if merged_df.empty:
+        raise ValueError(
+            "No matching records found between raw CSVs and AKI label file. "
+            "Please verify that identifier columns align (stay_id / hadm_id / admission_id)."
+        )
 
     # 保存合并后的DataFrame到CSV
     merged_df.to_csv(output_file_path, index=False)
