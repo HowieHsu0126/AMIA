@@ -4,6 +4,7 @@ Exposes:
     cMLP
     cRNN
     cLSTM
+    AttnGC
 """
 
 from importlib import import_module as _imp

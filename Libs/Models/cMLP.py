@@ -129,6 +129,28 @@ class cMLP(nn.Module):
         mask = torch.abs(GC) > (atol + rtol * torch.abs(GC))
         return mask.int()
 
+    # ------------------------------------------------------------------
+    # Attention-style weights ------------------------------------------
+    # ------------------------------------------------------------------
+    def attention(self, ignore_lag: bool = True, *, temperature: float = 1.0) -> torch.Tensor:  # noqa: N802
+        r"""Return a *row-normalised* attention matrix derived from first-layer weights.
+
+        The function rescales absolute kernel norms via a per-row softmax:
+
+        .. math::  A_{ij} = \mathrm{softmax}_i(\|W_{ij}\| / T)
+
+        where *T* is the *temperature* parameter controlling sparsity.
+        The resulting tensor has the same shape and semantics as
+        :py:meth:`GC(threshold=False)`.
+        """
+        if ignore_lag:
+            w = [torch.norm(net.layers[0].weight, dim=(0, 2)) for net in self.networks]
+        else:
+            w = [torch.norm(net.layers[0].weight, dim=0) for net in self.networks]
+        W = torch.stack(w).abs() / max(temperature, 1e-8)
+        # Row-wise softmax so each target variable sums to 1 across sources
+        return torch.softmax(W, dim=1)
+
 
 class cMLPSparse(nn.Module):
     def __init__(self, num_series, sparsity, lag, hidden, activation='relu'):

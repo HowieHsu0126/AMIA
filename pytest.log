@@ -1,0 +1,195 @@
+nohup: ignoring input
+============================= test session starts ==============================
+platform linux -- Python 3.9.18, pytest-7.4.4, pluggy-1.4.0
+rootdir: /data/hwxu/project/PKU/AMIA
+plugins: cases-3.8.2, anyio-4.1.0, hypothesis-6.135.11, timeout-2.2.0, hydra-core-1.3.2, cov-4.1.0, forked-1.6.0, typeguard-4.1.5
+collected 9 items
+
+Libs/Tests/test_attn_gc.py ...F                                          [ 44%]
+Libs/Tests/test_build_model.py .FF.                                      [ 88%]
+Libs/Tests/test_gc_graph.py .                                            [100%]
+
+=================================== FAILURES ===================================
+___________________________ test_training_loop_runs ____________________________
+
+    def test_training_loop_runs():
+        """Tiny train run should finish without error and reduce loss."""
+        torch.manual_seed(0)
+        p, N, T = 6, 16, 8
+        X = torch.randn(N, T, p)
+        model = AttnGC(num_series=p)
+    
+        # Capture initial loss
+        mse = torch.nn.MSELoss()
+        init_loss = mse(model(X), X[:, 1:, :]).item()
+    
+>       train_model_adam(model, X, lr=1e-2, max_iter=20, verbose=0)
+
+Libs/Tests/test_attn_gc.py:45: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+model = AttnGC()
+X = tensor([[[-1.1258e+00, -1.1524e+00, -2.5058e-01, -4.3388e-01,  8.4871e-01,
+           6.9201e-01],
+         [-3.1601e-...     -2.1456e+00],
+         [ 3.8271e-01, -4.0975e-01, -7.3860e-01,  1.6553e+00,  5.2037e-01,
+          -2.3262e-01]]])
+
+    def train_model_adam(
+        model: AttnGC,
+        X: torch.Tensor,
+        *,
+        lr: float = 1e-3,
+        max_iter: int = 1000,
+        lam: float = 0.0,
+        lam_ridge: float = 0.0,
+        batch_size: Optional[int] = None,
+        verbose: int = 1,
+    ):
+        """Optimise *AttnGC* via Adam.
+    
+        The objective is mean‐squared error plus optional L1/L2 penalties:
+    
+        ``loss = MSE + lam * ||A||_1 + lam_ridge * ||A||_2^2``
+        """
+    
+        device = next(model.parameters()).device
+        X = X.to(device)
+    
+        if batch_size is None:
+            # Use full‐batch gradient descent
+            loader = [(X, None)]
+        else:
+            from torch.utils.data import DataLoader, TensorDataset
+    
+            ds = TensorDataset(X)
+            loader = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        mse = torch.nn.MSELoss()
+    
+        for epoch in range(1, max_iter + 1):
+            running_loss = 0.0
+>           for (batch_X,) in loader:  # DataLoader returns tuple
+E           ValueError: too many values to unpack (expected 1)
+
+Libs/Models/AttnGC.py:152: ValueError
+_______________________________ test_build_crnn ________________________________
+
+    def test_build_crnn():
+>       model = build_model(_cfg("crnn"), num_series=5)
+
+Libs/Tests/test_build_model.py:15: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+Libs/run_pipeline.py:275: in build_model
+    return cRNN.cRNN(num_series, hidden)
+Libs/Models/cRNN.py:76: in __init__
+    self.networks = nn.ModuleList([
+Libs/Models/cRNN.py:77: in <listcomp>
+    RNN(num_series, hidden, nonlinearity) for _ in range(num_series)])
+Libs/Models/cRNN.py:37: in __init__
+    self.rnn = nn.RNN(num_series, hidden, nonlinearity=nonlinearity,
+/home/hwxu/anaconda3/envs/hw/lib/python3.9/site-packages/torch/nn/modules/rnn.py:528: in __init__
+    super().__init__(mode, *args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = RNN(5, [8, 4], batch_first=True), mode = 'RNN_RELU', input_size = 5
+hidden_size = [8, 4], num_layers = 1, bias = True, batch_first = True
+dropout = 0.0, bidirectional = False, proj_size = 0, device = None, dtype = None
+
+    def __init__(self, mode: str, input_size: int, hidden_size: int,
+                 num_layers: int = 1, bias: bool = True, batch_first: bool = False,
+                 dropout: float = 0., bidirectional: bool = False, proj_size: int = 0,
+                 device=None, dtype=None) -> None:
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super().__init__()
+        self.mode = mode
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bias = bias
+        self.batch_first = batch_first
+        self.dropout = float(dropout)
+        self.bidirectional = bidirectional
+        self.proj_size = proj_size
+        self._flat_weight_refs: List[Optional[weakref.ReferenceType[Parameter]]] = []
+        num_directions = 2 if bidirectional else 1
+    
+        if not isinstance(dropout, numbers.Number) or not 0 <= dropout <= 1 or \
+                isinstance(dropout, bool):
+            raise ValueError("dropout should be a number in range [0, 1] "
+                             "representing the probability of an element being "
+                             "zeroed")
+        if dropout > 0 and num_layers == 1:
+            warnings.warn("dropout option adds dropout after all but last "
+                          "recurrent layer, so non-zero dropout expects "
+                          f"num_layers greater than 1, but got dropout={dropout} and "
+                          f"num_layers={num_layers}")
+    
+        if not isinstance(hidden_size, int):
+>           raise TypeError(f"hidden_size should be of type int, got: {type(hidden_size).__name__}")
+E           TypeError: hidden_size should be of type int, got: list
+
+/home/hwxu/anaconda3/envs/hw/lib/python3.9/site-packages/torch/nn/modules/rnn.py:94: TypeError
+_______________________________ test_build_clstm _______________________________
+
+    def test_build_clstm():
+>       model = build_model(_cfg("clstm"), num_series=5)
+
+Libs/Tests/test_build_model.py:20: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+Libs/run_pipeline.py:277: in build_model
+    return cLSTM.cLSTM(num_series, hidden)
+Libs/Models/cLSTM.py:74: in __init__
+    self.networks = nn.ModuleList([
+Libs/Models/cLSTM.py:75: in <listcomp>
+    LSTM(num_series, hidden) for _ in range(num_series)])
+Libs/Models/cLSTM.py:36: in __init__
+    self.lstm = nn.LSTM(num_series, hidden, batch_first=True)
+/home/hwxu/anaconda3/envs/hw/lib/python3.9/site-packages/torch/nn/modules/rnn.py:808: in __init__
+    super().__init__('LSTM', *args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = LSTM(5, [8, 4], batch_first=True), mode = 'LSTM', input_size = 5
+hidden_size = [8, 4], num_layers = 1, bias = True, batch_first = True
+dropout = 0.0, bidirectional = False, proj_size = 0, device = None, dtype = None
+
+    def __init__(self, mode: str, input_size: int, hidden_size: int,
+                 num_layers: int = 1, bias: bool = True, batch_first: bool = False,
+                 dropout: float = 0., bidirectional: bool = False, proj_size: int = 0,
+                 device=None, dtype=None) -> None:
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super().__init__()
+        self.mode = mode
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bias = bias
+        self.batch_first = batch_first
+        self.dropout = float(dropout)
+        self.bidirectional = bidirectional
+        self.proj_size = proj_size
+        self._flat_weight_refs: List[Optional[weakref.ReferenceType[Parameter]]] = []
+        num_directions = 2 if bidirectional else 1
+    
+        if not isinstance(dropout, numbers.Number) or not 0 <= dropout <= 1 or \
+                isinstance(dropout, bool):
+            raise ValueError("dropout should be a number in range [0, 1] "
+                             "representing the probability of an element being "
+                             "zeroed")
+        if dropout > 0 and num_layers == 1:
+            warnings.warn("dropout option adds dropout after all but last "
+                          "recurrent layer, so non-zero dropout expects "
+                          f"num_layers greater than 1, but got dropout={dropout} and "
+                          f"num_layers={num_layers}")
+    
+        if not isinstance(hidden_size, int):
+>           raise TypeError(f"hidden_size should be of type int, got: {type(hidden_size).__name__}")
+E           TypeError: hidden_size should be of type int, got: list
+
+/home/hwxu/anaconda3/envs/hw/lib/python3.9/site-packages/torch/nn/modules/rnn.py:94: TypeError
+=========================== short test summary info ============================
+FAILED Libs/Tests/test_attn_gc.py::test_training_loop_runs - ValueError: too ...
+FAILED Libs/Tests/test_build_model.py::test_build_crnn - TypeError: hidden_si...
+FAILED Libs/Tests/test_build_model.py::test_build_clstm - TypeError: hidden_s...
+========================= 3 failed, 6 passed in 2.98s ==========================

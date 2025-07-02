@@ -5,16 +5,30 @@ extends:
 # Only override what is different from the defaults
 
 sql:
-  enabled: false  # Skip SQL extraction for this local run
+  enabled: false # Skip SQL extraction for this local run
 
+# Override model backbone to new attention-based GC
 model:
   training:
-    max_iter: 2000   # override default
-    batch_size: 256
+    max_iter: 2000
+    batch_size: 64
+    optimizer: gista
+    lr: 1.0e-3
+    # Increase L1/group-lasso strength for sparser GC matrix
+    lam: 2.0e-1         
+    lam_ridge: 1.0e-3
+    penalty: GSGL         # GL | GSGL | H – use stronger group-lasso
 
-device: cuda:3      # cuda | cpu | cuda:id etc.
+device: cuda:3 # cuda | cpu | cuda:id etc.
 seed: 42
 
 processed_dir: Input/processed/
-resample_horizon: 24               # hours
-min_records: 4                    # minimum hourly rows per patient
+resample_horizon: 24 # hours
+min_records: 4 # minimum hourly rows per patient
+
+# Graph / visualisation settings
+graphml_threshold: 0.5 # edge weight cutoff when exporting GC graph
+
+# Use only binary derangement flags as model inputs
+preprocess:
+  derangement_only: true

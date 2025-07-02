@@ -3,39 +3,6 @@
 Usage (command line):
     python -m Libs.run_pipeline --config config/train.yml --cpu
 
-The YAML configuration controls the following high-level stages:
-
-```yaml
-sql:
-  enabled: true                      # execute SQL extraction
-  psql_bin: psql                     # path to `psql` client
-  conn:                               # passed as env vars or psql flags
-    host: localhost
-    port: 5432
-    user: postgres
-    db: mimiciv
-  script: Libs/Data/SQL/run.sql      # top-level orchestration script
-
-preprocess:
-  enabled: true
-  raw_dir: Input/raw/
-  processed_dir: Input/processed/
-  resample_horizon: 24               # hours
-
-model:
-  backbone: cMLP                     # {cMLP,cRNN,cLSTM}
-  lag: 24
-  hidden: [128, 64]
-  training:
-    optimizer: gista                 # {gista,adam,ista}
-    max_iter: 5000
-    lr: 1e-3
-    lam: 1e-2
-    lam_ridge: 1e-3
-    penalty: H
-    batch_size: 32                   # reserved for future use
-```
-
 The script intentionally keeps external dependencies minimal: only *psycopg2* is
 needed for optional in-Python SQL execution; otherwise we fallback to the `psql`
 CLI tool.
@@ -57,6 +24,7 @@ import torch
 from Libs.Utils.config import load_config
 from Libs.Utils import preprocessor as prep
 from Libs.Models import cMLP, cRNN, cLSTM
+from Libs.Data.dataset import load_tensor_dataset
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +83,8 @@ def stage_sql(cfg: Dict[str, Any]) -> None:
     # ------------------------------------------------------------------
     # Inject DATA_DIR variable for export path substitution -------------
     # ------------------------------------------------------------------
-    data_dir = cfg.get("data_dir", "Input/raw/")  # Fallback keeps legacy default
+    # Fallback keeps legacy default
+    data_dir = cfg.get("data_dir", "Input/raw/")
     cmd = (
         f"{psql_bin} {' '.join(conn_flags)} -v ON_ERROR_STOP=1 "
         f"-v DATA_DIR='{data_dir}' -f {script_path}"
@@ -135,13 +104,48 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
     # If artefacts already exist, allow skipping the entire preprocessing step
     final_csv_marker = processed_dir / "dataset_reduced.csv"
     tensor_marker = processed_dir / "tensor.pt"
-    if final_csv_marker.exists() and tensor_marker.exists():
+
+    def _artifacts_consistent() -> bool:
+        """Heuristic check that cached tensor matches derangement schema."""
+        try:
+            import pandas as _pd
+            if not (tensor_marker.is_file() and final_csv_marker.is_file()):
+                return False
+
+            # Derive expected feature count (excluding id/time columns)
+            der_csv = processed_dir / "dataset_derangement.csv"
+            if not der_csv.is_file():
+                return False
+            _id_cols = {"patient_id", "stay_id", "admission_id", "hadm_id", "hour"}
+            expected_features = [c for c in _pd.read_csv(der_csv, nrows=1).columns if c not in _id_cols]
+
+            if cfg.get("derangement_only", False):
+                # Retain only derangement flags (same logic as preprocessing)
+                _der_flags = {
+                    "RenDys", "LyteImbal", "O2TxpDef", "Coag", "MalNut", "Chole",
+                    "HepatoDys", "HypGly", "MyoIsch", "CNSDys", "ThermoDys", "VasoSprt",
+                }
+                expected_features = [c for c in expected_features if c in _der_flags]
+
+            # Load cached tensor shape (but only metadata, not full to GPU)
+            import torch
+            X_meta = torch.load(tensor_marker, map_location="cpu")
+            if X_meta.ndim != 3:
+                return False
+            return X_meta.shape[-1] == len(expected_features)
+        except Exception as exc:  # pragma: no cover – best-effort only
+            logger.warning("Failed to validate cached artefacts: %s", exc)
+            return False
+
+    if _artifacts_consistent():
         logger.info(
-            "[Preprocess] Detected existing preprocessed files (%s, %s) – skipping preprocessing stage.",
+            "[Preprocess] Detected up-to-date preprocessed files (%s, %s) – skipping preprocessing stage.",
             final_csv_marker.name,
             tensor_marker.name,
         )
         return
+    else:
+        logger.info("[Preprocess] Cached artefacts stale or missing – running full preprocessing stage.")
 
     # ------------------------------------------------------------------
     # File naming convention expected by downstream consumers ------------
@@ -173,7 +177,8 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
     # 2b) Filter out patients with < min_records (configurable, default 4) --
     from Libs.Utils import preprocessor as _prep  # avoid name shadowing
     min_records = cfg.get("min_records", 4)
-    _prep.filter_by_min_records(dataset_csv, dataset_filtered_csv, min_records=min_records)
+    _prep.filter_by_min_records(
+        dataset_csv, dataset_filtered_csv, min_records=min_records)
 
     # ------------------------------------------------------------------
     # 3) Fill missing values -------------------------------------------
@@ -193,7 +198,8 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
     # 5) Derangement flag engineering ----------------------------------
     # ------------------------------------------------------------------
     try:
-        prep.add_derangement_flags(dataset_derangement_csv, dataset_derangement_csv)
+        prep.add_derangement_flags(
+            dataset_derangement_csv, dataset_derangement_csv)
     except Exception as exc:
         logger.warning("Derangement flag generation failed: %s", exc)
 
@@ -208,12 +214,26 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
     import pandas as pd
     import numpy as np
 
-    df = pd.read_csv(dataset_reduced_csv)
+    # For model training we use the *derangement* table (before dtype down-cast)
+    # to retain full precision. The memory-optimised CSV is still produced for
+    # external sharing/analysis.
+    df = pd.read_csv(dataset_derangement_csv)
 
-    # Drop identifier columns that should not be treated as input features
-    for id_col in ["patient_id", "stay_id", "admission_id", "hadm_id"]:
-        if id_col in df.columns:
-            df = df.drop(columns=[id_col])
+    id_cols = ["patient_id", "stay_id", "admission_id", "hadm_id"]
+    feature_labels = [c for c in df.columns if c not in id_cols and c != "hour"]
+
+    # Optional: keep only derangement flags --------------------------------
+    if cfg.get("derangement_only", False):
+        _der_flags = {
+            "RenDys", "LyteImbal", "O2TxpDef", "Coag", "MalNut", "Chole",
+            "HepatoDys", "HypGly", "MyoIsch", "CNSDys", "ThermoDys", "VasoSprt",
+        }
+        feature_labels = [c for c in feature_labels if c in _der_flags]
+        df = df[feature_labels]
+
+    # Drop identifier/time columns that should not be treated as input features
+    drop_cols = id_cols + ["hour"]
+    df = df.drop(columns=[c for c in drop_cols if c in df.columns])
 
     # Ensure numerical tensor – coerce non‐numeric to NaN then fill with 0
     df_numeric = df.apply(pd.to_numeric, errors="coerce").fillna(0.0)
@@ -236,6 +256,13 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
     torch.save(X, tensor_path)
     logger.info("Saved preprocessed tensor ➜ %s", tensor_path)
 
+    # Persist feature labels for downstream stages ------------------------
+    labels_txt = processed_dir / "feature_labels.txt"
+    try:
+        labels_txt.write_text("\n".join(feature_labels), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover – defensive only
+        logger.warning("Could not write feature_labels.txt: %s", exc)
+
 
 def build_model(cfg: Dict[str, Any], num_series: int):
     backbone = cfg["backbone"].lower()
@@ -245,16 +272,18 @@ def build_model(cfg: Dict[str, Any], num_series: int):
     if backbone == "cmlp":
         return cMLP.cMLP(num_series, lag, hidden)
     if backbone == "crnn":
-        return cRNN.cRNN(num_series, hidden)
+        _h = hidden[0] if isinstance(hidden, (list, tuple)) else hidden
+        return cRNN.cRNN(num_series, _h)
     if backbone == "clstm":
-        return cLSTM.cLSTM(num_series, hidden)
+        _h = hidden[0] if isinstance(hidden, (list, tuple)) else hidden
+        return cLSTM.cLSTM(num_series, _h)
 
     raise ValueError(f"Unsupported backbone: {backbone}")
 
 
 def stage_training(cfg: Dict[str, Any], tensor_path: Path, device: torch.device):
-    X = torch.load(tensor_path)
-    X = X.to(device)
+    from Libs.Data.dataset import load_tensor_dataset
+    X = load_tensor_dataset(tensor_path, device=device)
 
     # Ensure the specified lag/context is compatible with tensor length
     time_steps = X.shape[1]
@@ -308,7 +337,8 @@ def stage_training(cfg: Dict[str, Any], tensor_path: Path, device: torch.device)
             )
         else:
             # Fall back to Adam
-            train_fn = cRNN.train_model_adam if isinstance(model, cRNN.cRNN) else cLSTM.train_model_adam
+            train_fn = cRNN.train_model_adam if isinstance(
+                model, cRNN.cRNN) else cLSTM.train_model_adam
             train_fn(
                 model, X,
                 context=context,
@@ -323,7 +353,31 @@ def stage_training(cfg: Dict[str, Any], tensor_path: Path, device: torch.device)
     output_dir = Path("Output")
     output_dir.mkdir(exist_ok=True)
     torch.save(model.state_dict(), output_dir / "model.pt")
-    gc_tensor = model.GC(threshold=False).cpu()  # save raw norms, not binary
+    # Scale GC norms to 0-1 range for downstream analysis -------------------
+    # ------------------------------------------------------------------
+    # Normalise learned GC weights ------------------------------------
+    # ------------------------------------------------------------------
+    # NOTE: The previous implementation divided the entire matrix by its
+    # *global* maximum, which often resulted in values clustering very
+    # close to 1.0 and obscured meaningful variation between source
+    # variables.  We now perform *row-wise* normalisation so that, for each
+    # target variable *i*, the strongest causal parent attains weight 1.0
+    # while preserving relative magnitudes among the remaining parents.
+    # Self-loops (i == j) are explicitly set to zero because they do not
+    # carry causal interpretation.
+    _gc_raw = model.GC(threshold=False).cpu().abs()
+
+    # Row-wise max normalisation
+    row_max = _gc_raw.max(dim=1, keepdim=True).values  # shape (p, 1)
+    gc_tensor = _gc_raw / (row_max + 1e-12)
+
+    # Remove self-causation entries (compat w/ older PyTorch)
+    try:
+        torch.fill_diagonal_(gc_tensor, 0.0)
+    except AttributeError:  # Fallback for <1.11 where fill_diagonal_ is missing
+        idx = torch.arange(gc_tensor.size(-1))
+        gc_tensor[idx, idx] = 0.0
+
     gc_path = output_dir / "GC_matrix.pt"
     torch.save(gc_tensor, gc_path)
 
@@ -333,8 +387,52 @@ def stage_training(cfg: Dict[str, Any], tensor_path: Path, device: torch.device)
     try:
         from Libs.Utils.gc_graph import export_graphml
 
-        graphml_path = export_graphml(gc_path, output_dir=output_dir / "Results")
-        logger.info("GC GraphML exported ➜ %s", graphml_path)
+        # ------------------------------------------------------------------
+        # Retrieve feature labels – priority: cached TXT ➜ derangement CSV --
+        # ------------------------------------------------------------------
+        feature_labels: list[str] | None = None
+        labels_txt = tensor_path.parent / "feature_labels.txt"
+        if labels_txt.is_file():
+            try:
+                feature_labels = labels_txt.read_text(encoding="utf-8").splitlines()
+            except Exception as exc:  # pragma: no cover – defensive only
+                logger.warning("Failed to read %s: %s", labels_txt, exc)
+
+        if feature_labels is None:
+            try:
+                import pandas as _pd
+                der_csv = tensor_path.parent / "dataset_derangement.csv"
+                _df_cols = _pd.read_csv(der_csv, nrows=1).columns
+                _id_cols = {"patient_id", "stay_id", "admission_id", "hadm_id", "hour"}
+                feature_labels = [c for c in _df_cols if c not in _id_cols]
+            except Exception as exc:  # pragma: no cover – defensive only
+                logger.warning("Could not reconstruct feature labels from CSV: %s", exc)
+                feature_labels = None
+
+        # Validate label count against GC tensor ---------------------------
+        if feature_labels is not None and len(feature_labels) != gc_tensor.shape[0]:
+            logger.warning(
+                "Mismatch between label count (%d) and GC tensor size (%d) – using numeric labels.",
+                len(feature_labels), gc_tensor.shape[0],
+            )
+            feature_labels = None  # Fallback to default numeric labels
+
+        graph_thr = cfg.get("graphml_threshold", 1e-3)
+        graphml_path = export_graphml(
+            gc_path,
+            output_dir=output_dir / "Results",
+            labels=feature_labels,
+            threshold=graph_thr,
+        )
+        logger.info("GraphML threshold set to %s", graph_thr)
+
+        # Produce GrootRank PDF plot -----------------------------------
+        try:
+            from Libs.Utils.postprocessor import plot_grootrank
+            pdf_path = plot_grootrank(graphml_path, output_pdf=output_dir / "Results" / "GrootRank.pdf")
+            logger.info("GrootRank PDF exported ➜ %s", pdf_path)
+        except Exception as exc:
+            logger.warning("GrootRank post-processing failed: %s", exc)
     except Exception as exc:
         logger.warning("GraphML export failed: %s", exc)
 
@@ -347,8 +445,10 @@ def stage_training(cfg: Dict[str, Any], tensor_path: Path, device: torch.device)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run full NGC-AKI pipeline.")
-    parser.add_argument("--config", type=str, required=True, help="Path to YAML config file.")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU execution even if CUDA is available.")
+    parser.add_argument("--config", type=str, required=True,
+                        help="Path to YAML config file.")
+    parser.add_argument("--cpu", action="store_true",
+                        help="Force CPU execution even if CUDA is available.")
 
     args = parser.parse_args()
 
@@ -359,7 +459,8 @@ def main() -> None:
     # ------------------------------------------------------------------
     seed = cfg.get("seed")
     if seed is not None:
-        import random, numpy as np
+        import random
+        import numpy as np
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -369,10 +470,13 @@ def main() -> None:
         torch.backends.cudnn.benchmark = False
         logger.info("Global seed set to %d", seed)
 
-    device_str = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")).lower()
-    device = torch.device(device_str if device_str != "cuda" else ("cuda:0" if torch.cuda.is_available() else "cpu"))
+    device_str = str(
+        cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")).lower()
+    device = torch.device(device_str if device_str != "cuda" else (
+        "cuda:0" if torch.cuda.is_available() else "cpu"))
     if device.type == "cuda" and not torch.cuda.is_available():
-        logger.info("CUDA requested in config but not available – falling back to CPU")
+        logger.info(
+            "CUDA requested in config but not available – falling back to CPU")
         device = torch.device("cpu")
 
     # CLI flag --cpu overrides YAML device
@@ -398,13 +502,15 @@ def main() -> None:
     stage_sql(cfg.get("sql", {}))
     stage_preprocess(cfg.get("preprocess", {}))
 
-    tensor_path = Path(cfg["preprocess"]["processed_dir"]).expanduser() / "tensor.pt"
+    tensor_path = Path(cfg["preprocess"]["processed_dir"]
+                       ).expanduser() / "tensor.pt"
     if not tensor_path.exists():
-        logger.error("Tensor file not found: %s – did preprocessing succeed?", tensor_path)
+        logger.error(
+            "Tensor file not found: %s – did preprocessing succeed?", tensor_path)
         sys.exit(1)
 
     stage_training(cfg["model"], tensor_path, device=device)
 
 
 if __name__ == "__main__":
-    main() 
+    main()

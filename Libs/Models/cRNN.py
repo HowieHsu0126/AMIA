@@ -115,6 +115,15 @@ class cRNN(nn.Module):
         mask = torch.abs(GC) > (atol + rtol * torch.abs(GC))
         return mask.int()
 
+    # ------------------------------------------------------------------
+    # Attention weights -------------------------------------------------
+    # ------------------------------------------------------------------
+    def attention(self, *, temperature: float = 1.0) -> torch.Tensor:  # noqa: N802
+        """Row-normalised attention matrix from RNN input weights."""
+        w = [torch.norm(net.rnn.weight_ih_l0, dim=0) for net in self.networks]
+        W = torch.stack(w).abs() / max(temperature, 1e-8)
+        return torch.softmax(W, dim=1)
+
 
 class cRNNSparse(nn.Module):
     def __init__(self, num_series, sparsity, hidden, nonlinearity='relu'):

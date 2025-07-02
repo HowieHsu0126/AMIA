@@ -1,0 +1,1 @@
+nohup python -m Libs.run_pipeline --config config/train.yml > Output/Logs/exp.log 2>&1 &
