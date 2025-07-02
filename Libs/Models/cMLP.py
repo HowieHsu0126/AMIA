@@ -183,6 +183,8 @@ def prox_update(network, lam, lr, penalty):
       penalty: one of GL (group lasso), GSGL (group sparse group lasso),
         H (hierarchical).
     '''
+    if isinstance(lam, str):
+        lam = float(lam)
     W = network.layers[0].weight
     # Ensure numerical stability for frozen / near-zero columns.
     eps = max(lr * lam, 1e-8)
@@ -215,30 +217,47 @@ def regularize(network, lam, penalty):
       penalty: one of GL (group lasso), GSGL (group sparse group lasso),
         H (hierarchical).
     '''
+    if isinstance(lam, str):
+        lam = float(lam)
     W = network.layers[0].weight
     hidden, p, lag = W.shape
     if penalty == 'GL':
-        return lam * torch.sum(torch.norm(W, dim=(0, 2)))
+        return torch.sum(torch.norm(W, dim=(0, 2))) * lam
     elif penalty == 'GSGL':
-        return lam * (torch.sum(torch.norm(W, dim=(0, 2)))
-                      + torch.sum(torch.norm(W, dim=0)))
+        return (torch.sum(torch.norm(W, dim=(0, 2)))
+                + torch.sum(torch.norm(W, dim=0))) * lam
     elif penalty == 'H':
         # Lowest indices along third axis touch most lagged values.
-        return lam * sum([torch.sum(torch.norm(W[:, :, :(i+1)], dim=(0, 2)))
-                          for i in range(lag)])
+        reg = sum([torch.sum(torch.norm(W[:, :, :(i+1)], dim=(0, 2)))
+                   for i in range(lag)])
+        return reg * lam
     else:
         raise ValueError('unsupported penalty: %s' % penalty)
 
 
 def ridge_regularize(network, lam):
-    '''Apply ridge penalty at all subsequent layers.'''
-    return lam * sum([torch.sum(fc.weight ** 2) for fc in network.layers[1:]])
+    """L2 penalty on **all** learnable weights except the first Conv layer.
+
+    Returns a torch scalar so that autograd can propagate gradients. Handles
+    edge-cases where ModuleList may contain non-parametric layers or be empty.
+    """
+    params = list(network.parameters())[2:]  # skip first layer's weight & bias
+    if not params:
+        # Create a zero tensor on same device to keep graph intact
+        zero = next(network.parameters()).new_zeros(1)
+        return lam * zero.squeeze()
+    reg = torch.sum(torch.stack([torch.sum(p ** 2) for p in params]))
+    if isinstance(lam, str):
+        lam = float(lam)
+    lam_tensor = torch.as_tensor(lam, dtype=reg.dtype, device=reg.device)
+    return reg * lam_tensor
 
 
 def restore_parameters(model, best_model):
     '''Move parameter values from best_model to model.'''
     for params, best_params in zip(model.parameters(), best_model.parameters()):
-        params.data = best_params
+        with torch.no_grad():
+            params.data.copy_(best_params.data)
 
 
 def train_model_gista(cmlp, X, lam, lam_ridge, lr, penalty, max_iter,
@@ -271,6 +290,9 @@ def train_model_gista(cmlp, X, lam, lam_ridge, lr, penalty, max_iter,
     lag = cmlp.lag
     cmlp_copy = deepcopy(cmlp)
     loss_fn = nn.MSELoss(reduction='mean')
+    # Ensure scalar learning rates are float, regardless of whether they were
+    # passed in as YAML strings such as "1e-3".
+    lr = float(lr)
     lr_list = [lr for _ in range(p)]
 
     # Calculate full loss.
@@ -306,7 +328,13 @@ def train_model_gista(cmlp, X, lam, lam_ridge, lr, penalty, max_iter,
     if not monotone:
         last_losses = [[loss_list[i]] for i in range(p)]
 
-    for it in range(max_iter):
+    try:
+        from tqdm import trange
+        iter_range = trange(max_iter, desc="GISTA", disable=(verbose==0))
+    except ModuleNotFoundError:
+        iter_range = range(max_iter)
+
+    for it in iter_range:
         # Backpropagate errors.
         sum([smooth_list[i] for i in range(p) if not done[i]]).backward()
 
@@ -334,7 +362,22 @@ def train_model_gista(cmlp, X, lam, lam_ridge, lr, penalty, max_iter,
                 # Perform tentative ISTA step.
                 for param, temp_param in zip(net.parameters(),
                                              net_copy.parameters()):
-                    temp_param.data = param - lr_it * param.grad
+                    g = param.grad
+                    if g is None or not torch.is_floating_point(g):
+                        # Safe in-place copy avoids re-binding the `.data` attribute which can
+                        # lead to unexpected dtype/device conversion errors on some versions of
+                        # PyTorch.
+                        with torch.no_grad():
+                            temp_param.data.copy_(param.data)
+                    else:
+                        # Use no-grad context to update weights while keeping the computation
+                        # graph intact for the original network.  This also guarantees the
+                        # destination tensor stays on the correct device.
+                        with torch.no_grad():
+                            # in-place update avoids intermediate tensor allocation; add_ has
+                            # stable semantics across tensor dtypes.
+                            temp_param.data.copy_(param.data)
+                            temp_param.data.add_(g, alpha=-lr_it)
 
                 # Proximal update.
                 prox_update(net_copy, lam, lr_it, penalty)
@@ -432,7 +475,7 @@ def train_model_gista(cmlp, X, lam, lam_ridge, lr, penalty, max_iter,
 
 
 def train_model_adam(cmlp, X, lr, max_iter, lam=0, lam_ridge=0, penalty='H',
-                     lookback=5, check_every=100, verbose=1):
+                     lookback=5, check_every=100, verbose=1, *, batch_size: int | None = None):
     '''Train model with Adam.'''
     lag = cmlp.lag
     p = X.shape[-1]
@@ -445,9 +488,22 @@ def train_model_adam(cmlp, X, lr, max_iter, lam=0, lam_ridge=0, penalty='H',
     best_loss = np.inf
     best_model = None
 
-    for it in range(max_iter):
-        # Calculate loss.
-        loss = sum([loss_fn(cmlp.networks[i](X[:, :-1]), X[:, lag:, i:i+1])
+    try:
+        from tqdm import trange
+        iter_range = trange(max_iter, desc="Adam", disable=(verbose==0))
+    except ModuleNotFoundError:
+        iter_range = range(max_iter)
+
+    for it in iter_range:
+        # Mini-batch sampling ------------------------------------------------
+        if batch_size is not None and batch_size < X.shape[0]:
+            idx = torch.randint(0, X.shape[0], (batch_size,), device=X.device)
+            X_batch = X[idx]
+        else:
+            X_batch = X
+
+        # Calculate loss on batch / full data.
+        loss = sum([loss_fn(cmlp.networks[i](X_batch[:, :-1]), X_batch[:, lag:, i:i+1])
                     for i in range(p)])
 
         # Add penalty terms.
@@ -507,11 +563,22 @@ def train_model_ista(cmlp, X, lr, max_iter, lam=0, lam_ridge=0, penalty='H',
     ridge = sum([ridge_regularize(net, lam_ridge) for net in cmlp.networks])
     smooth = loss + ridge
 
-    for it in range(max_iter):
+    try:
+        from tqdm import trange
+        iter_range = trange(max_iter, desc="ISTA", disable=(verbose==0))
+    except ModuleNotFoundError:
+        iter_range = range(max_iter)
+
+    for it in iter_range:
         # Take gradient step.
         smooth.backward()
         for param in cmlp.parameters():
-            param.data = param - lr * param.grad
+            # Update parameters in-place without re-assigning `.data` to circumvent
+            # potential device / dtype mismatches that can trigger obscure TypeErrors
+            # on some PyTorch builds.
+            with torch.no_grad():
+                param.data.copy_(param.data)
+                param.data.add_(param.grad, alpha=-lr)
 
         # Take prox step.
         if lam > 0:
@@ -571,7 +638,13 @@ def train_unregularized(cmlp, X, lr, max_iter, lookback=5, check_every=100,
     best_loss = np.inf
     best_model = None
 
-    for it in range(max_iter):
+    try:
+        from tqdm import trange
+        iter_range = trange(max_iter, desc="UNREG", disable=(verbose==0))
+    except ModuleNotFoundError:
+        iter_range = range(max_iter)
+
+    for it in iter_range:
         # Calculate loss.
         pred = cmlp(X[:, :-1])
         loss = sum([loss_fn(pred[:, :, i], X[:, lag:, i]) for i in range(p)])

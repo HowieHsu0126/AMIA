@@ -1,0 +1,12 @@
+model:
+  backbone: cMLP          # cMLP | cRNN | cLSTM
+  lag: 24                 # history length (hours)
+  hidden: [128, 64]       # hidden units per layer
+  training:
+    optimizer: gista      # gista | adam | ista
+    max_iter: 5000
+    lr: 1e-3
+    lam: 1e-2
+    lam_ridge: 1e-3
+    penalty: H            # H | GL | GSGL
+    batch_size: 32        # reserved for mini-batching 

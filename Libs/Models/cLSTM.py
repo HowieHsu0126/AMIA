@@ -401,7 +401,7 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
 
 
 def train_model_adam(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
-                     lookback=5, check_every=50, verbose=1):
+                     lookback=5, check_every=50, verbose=1, *, batch_size: int | None = None):
     '''Train model with Adam.'''
     p = X.shape[-1]
     loss_fn = nn.MSELoss(reduction='mean')
@@ -419,9 +419,15 @@ def train_model_adam(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
     best_model = None
 
     for it in range(max_iter):
-        # Calculate loss.
-        pred = [clstm.networks[i](X)[0] for i in range(p)]
-        loss = sum([loss_fn(pred[i][:, :, 0], Y[:, :, i]) for i in range(p)])
+        # Mini-batch
+        if batch_size is not None and batch_size < X.shape[0]:
+            idx = torch.randint(0, X.shape[0], (batch_size,), device=X.device)
+            X_batch, Y_batch = X[idx], Y[idx]
+        else:
+            X_batch, Y_batch = X, Y
+
+        pred = [clstm.networks[i](X_batch)[0] for i in range(p)]
+        loss = sum([loss_fn(pred[i][:, :, 0], Y_batch[:, :, i]) for i in range(p)])
 
         # Add penalty term.
         if lam > 0:

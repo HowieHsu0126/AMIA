@@ -90,49 +90,49 @@ def resample_and_mask(
         raise KeyError("No ID column (stay_id/admission_id/hadm_id) found in input CSV")
 
     # ------------------------------------------------------------------
-    # Collapse potential duplicates BEFORE pivot to keep memory low ------
+    # Per-patient resampling to avoid huge wide pivot --------------------
     # ------------------------------------------------------------------
+    # Ensure 'hour' column is integer for safe indexing
+    timeseries['hour'] = (
+        pd.to_numeric(timeseries['hour'], errors='coerce')
+        .fillna(0)
+        .astype(int)
+    )
+
     timeseries = (
         timeseries
         .groupby([id_col, 'hour'], as_index=False)
-        .mean()   # aggregate numeric cols
+        .mean()
     )
 
-    timeseries.set_index([id_col, 'hour'], inplace=True)
+    feature_cols = [c for c in timeseries.columns if c not in (id_col, 'hour')]
+    horizon = kwargs.get('horizon', 24)
 
-    # Take the mean of any duplicate index entries for unstacking
-    timeseries = timeseries.groupby(level=[0, 1]).mean()
-    # Put patient into columns so that we can round the timedeltas to the nearest hour and take the mean in the time interval
-    unstacked = timeseries.unstack(level=0)
-    unstacked.index = pd.to_timedelta(unstacked.index, unit='H').ceil('H')
-    resampled = unstacked.resample('H').mean()
+    outputs = []
+    for pid, sub in timeseries.groupby(id_col, sort=False):
+        sub = sub.set_index('hour').sort_index()
 
-    if verbose:
-        _log(level, "Filling missing data forwards and then backwards...")
-    # First carry forward missing values, then carry backward
-    resampled = resampled.fillna(method='ffill').fillna(
-        method='bfill').iloc[-24:]
+        # Build continuous hourly index covering observed span
+        idx = pd.RangeIndex(int(sub.index.min()), int(sub.index.max()) + 1)
+        sub = sub.reindex(idx)
 
-    # Simplify the indexes of both tables
-    resampled.index = list(range(1, 25))
+        # Forward/backward fill then truncate to final `horizon` rows
+        sub_ff = sub.fillna(method='ffill').fillna(method='bfill').tail(horizon)
 
-    if verbose:
-        _log(level, "Filling in remaining values with zeros...")
-    # This step might not be necessary if the above fillna methods cover all cases,
-    # but it's a good safeguard.
+        sub_ff[id_col] = pid
+        sub_ff['hour'] = sub_ff.index
+        outputs.append(sub_ff.reset_index(drop=True))
+
+    if not outputs:
+        logger.warning("No data after resampling – output skipped: %s", output_file_path)
+        return
+
+    resampled = pd.concat(outputs, ignore_index=True)[[id_col, 'hour'] + feature_cols]
+
     resampled.fillna(0, inplace=True)
 
-    if verbose:
-        _log(level, "Reconfiguring and combining features with mask features...")
-    # Pivot the table around to give the final data
-    resampled = resampled.stack(level=1).swaplevel(0, 1).sort_index(level=0)
-    
-    resampled.reset_index(inplace=True)
-    # After reset_index the stacked level gets named 'level_1'; rename for clarity
-    resampled = resampled.rename(columns={"level_1": "hour", id_col: "patient_id"})
-    
     _log(level, "Writing resampled CSV to: %s", output_file_path)
-    resampled.to_csv(output_file_path)
+    resampled.to_csv(output_file_path, index=False)
 
 
 def find_stay_id_intersection(directory_path: Union[str, Path], output_file_path: Union[str, Path]) -> None:

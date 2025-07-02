@@ -48,6 +48,7 @@ import logging
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Dict
 
@@ -58,6 +59,14 @@ from Libs.Utils import preprocessor as prep
 from Libs.Models import cMLP, cRNN, cLSTM
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Silence noisy warnings (FutureWarning, UserWarning, etc.) -------------------
+# ---------------------------------------------------------------------------
+# These warnings tend to clutter the console/logs and are not actionable for
+# end-users in the context of running the pipeline.  They can still be
+# re-enabled by commenting out the following line if needed for debugging.
+warnings.filterwarnings("ignore")
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +216,7 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
 
     horizon = cfg.get("resample_horizon", 24)
     if X.shape[0] % horizon != 0:
-        logger.warning(
+        logger.info(
             "Number of rows (%d) not divisible by horizon (%d) – truncating",
             X.shape[0], horizon,
         )
@@ -234,14 +243,22 @@ def build_model(cfg: Dict[str, Any], num_series: int):
     raise ValueError(f"Unsupported backbone: {backbone}")
 
 
-def stage_training(cfg: Dict[str, Any], tensor_path: Path, use_cpu: bool = False):
+def stage_training(cfg: Dict[str, Any], tensor_path: Path, device: torch.device):
     X = torch.load(tensor_path)
-    if not use_cpu and torch.cuda.is_available():
-        X = X.cuda()
+    X = X.to(device)
+
+    # Ensure the specified lag/context is compatible with tensor length
+    time_steps = X.shape[1]
+    if cfg.get("lag", 1) >= time_steps:
+        new_lag = max(1, time_steps - 1)
+        logger.info(
+            "Configured lag (%d) >= available time steps (%d) – reducing lag to %d",
+            cfg.get("lag"), time_steps, new_lag,
+        )
+        cfg["lag"] = new_lag
 
     model = build_model(cfg, num_series=X.shape[-1])
-    if not use_cpu and torch.cuda.is_available():
-        model = model.cuda()
+    model = model.to(device)
 
     train_cfg = cfg["training"]
     optim = train_cfg.get("optimizer", "gista").lower()
@@ -264,6 +281,7 @@ def stage_training(cfg: Dict[str, Any], tensor_path: Path, use_cpu: bool = False
                 lam=train_cfg["lam"],
                 lam_ridge=train_cfg["lam_ridge"],
                 penalty=train_cfg["penalty"],
+                batch_size=train_cfg.get("batch_size"),
             )
         else:
             raise ValueError(optim)
@@ -289,6 +307,7 @@ def stage_training(cfg: Dict[str, Any], tensor_path: Path, use_cpu: bool = False
                 max_iter=train_cfg["max_iter"],
                 lam=train_cfg["lam"],
                 lam_ridge=train_cfg["lam_ridge"],
+                batch_size=train_cfg.get("batch_size"),
             )
 
     # Persist outputs --------------------------------------------------------
@@ -313,6 +332,33 @@ def main() -> None:
     cfg = load_config(args.config)
 
     # ------------------------------------------------------------------
+    # Reproducibility & device handling ---------------------------------
+    # ------------------------------------------------------------------
+    seed = cfg.get("seed")
+    if seed is not None:
+        import random, numpy as np
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        logger.info("Global seed set to %d", seed)
+
+    device_str = str(cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")).lower()
+    device = torch.device(device_str if device_str != "cuda" else ("cuda:0" if torch.cuda.is_available() else "cpu"))
+    if device.type == "cuda" and not torch.cuda.is_available():
+        logger.info("CUDA requested in config but not available – falling back to CPU")
+        device = torch.device("cpu")
+
+    # CLI flag --cpu overrides YAML device
+    if args.cpu:
+        logger.info("Running on CPU as per configuration/flag")
+    else:
+        logger.info("Running on device: %s", device)
+
+    # ------------------------------------------------------------------
     # Resolve global I/O paths defined under cfg["paths"] --------------
     # ------------------------------------------------------------------
     paths_cfg = cfg.setdefault("paths", {})
@@ -334,7 +380,7 @@ def main() -> None:
         logger.error("Tensor file not found: %s – did preprocessing succeed?", tensor_path)
         sys.exit(1)
 
-    stage_training(cfg["model"], tensor_path, use_cpu=args.cpu)
+    stage_training(cfg["model"], tensor_path, device=device)
 
 
 if __name__ == "__main__":

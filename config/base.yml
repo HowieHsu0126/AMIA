@@ -21,22 +21,4 @@ preprocess:
   enabled: true
   resample_horizon: 24
 
-model:
-  backbone: cMLP
-  lag: 24
-  hidden: [128, 64]
-  training:
-    optimizer: gista
-    max_iter: 5000
-    lr: 1e-3
-    lam: 1e-2
-    lam_ridge: 1e-3
-    penalty: H
-    batch_size: 32
-
-# ---- duplicate lines removed ----
-
-# paths placeholder removed
-
-# paths:
-#  
+# end of base.yml
