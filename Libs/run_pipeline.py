@@ -189,12 +189,20 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 5) Memory optimisation -------------------------------------------
+    # 5) Derangement flag engineering ----------------------------------
+    # ------------------------------------------------------------------
+    try:
+        prep.add_derangement_flags(dataset_derangement_csv, dataset_derangement_csv)
+    except Exception as exc:
+        logger.warning("Derangement flag generation failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # 6) Memory optimisation -------------------------------------------
     # ------------------------------------------------------------------
     prep.reduce_mem_usage(dataset_derangement_csv, dataset_reduced_csv)
 
     # ------------------------------------------------------------------
-    # 6) Convert final CSV ➜ Tensor ------------------------------------
+    # 7) Convert final CSV ➜ Tensor ------------------------------------
     # ------------------------------------------------------------------
     import pandas as pd
     import numpy as np

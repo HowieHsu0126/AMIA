@@ -428,3 +428,78 @@ def merge_all_csv(
     base_df.to_csv(output_file_path, index=False)
 
     logger.info("Merged CSV saved to %s", output_file_path)
+
+# ---------------------------------------------------------------------------
+# Derangement flag engineering ----------------------------------------------
+# ---------------------------------------------------------------------------
+
+
+def _binary_flag(col: pd.Series, condition: pd.Series) -> pd.Series:
+    """Helper: return integer mask (0/1) from boolean condition."""
+    return condition.astype(int)
+
+
+def add_derangement_flags(input_path: Union[str, Path], output_path: Union[str, Path]) -> None:
+    """Append organ‐dysfunction binary flags used by downstream derangement analysis.
+
+    The logic mirrors the notebook *Derangement.ipynb* and yields the following
+    columns (all ``int``):
+
+    * RenDys, LyteImbal, O2TxpDef, Coag, MalNut, Chole, HepatoDys, HypGly,
+      MyoIsch, CNSDys, O2DiffDys, ThermoDys, Tachy, VasoSprt
+
+    Args:
+        input_path: Path to CSV to be updated in‐place or read for processing.
+        output_path: Destination CSV path.
+    """
+
+    df = pd.read_csv(input_path)
+
+    # Safe helpers -----------------------------------------------------------
+    def get(col: str) -> pd.Series:
+        return pd.to_numeric(df.get(col, pd.Series([np.nan] * len(df))), errors="coerce")
+
+    # Renal Dysfunction ------------------------------------------------------
+    df["RenDys"] = _binary_flag(df, (get("creatinine") > 1.3) | (get("urineoutput") < 30) | (get("urineoutput") > 50) | (get("bun") > 20))
+
+    # Electrolyte imbalance --------------------------------------------------
+    df["LyteImbal"] = _binary_flag(df, (get("calcium") > 10.5) | (get("chloride") > 106) | (get("chloride") < 98) | (get("potassium") > 5.0))
+
+    # Oxygen transport deficiency -------------------------------------------
+    df["O2TxpDef"] = _binary_flag(df, get("hemoglobin") < 12)
+
+    # Coagulation ------------------------------------------------------------
+    df["Coag"] = _binary_flag(df, (get("ptt") > 35) | (get("fibrinogen") < 233) | (get("d_dimer") > 0.5) | (get("thrombin") > 20) | (get("inr") > 1.5))
+
+    # Malnutrition -----------------------------------------------------------
+    df["MalNut"] = _binary_flag(df, get("albumin") < 3.3)
+
+    # Cholestasis ------------------------------------------------------------
+    df["Chole"] = _binary_flag(df, (get("bilirubin_direct") > 0.3) | (get("bilirubin_total") > 1.0))
+
+    # Hepatic dysfunction ----------------------------------------------------
+    df["HepatoDys"] = _binary_flag(df, (get("ast") > 40) | (get("alt") > 40))
+
+    # Hyperglycemia ----------------------------------------------------------
+    df["HypGly"] = _binary_flag(df, get("glucose") > 125)
+
+    # Myocardial ischemia & CNS dys -----------------------------------------
+    df["MyoIsch"] = _binary_flag(df, get("troponin_t") > 0.04)
+    df["CNSDys"] = df["MyoIsch"].copy()  # Same clinical criterion
+
+    # Oxygen diffusion dysfunction ------------------------------------------
+    df["O2DiffDys"] = _binary_flag(df, (get("spo2") < 92) | (get("fio2") > 21))
+
+    # Thermoregulation -------------------------------------------------------
+    df["ThermoDys"] = _binary_flag(df, (get("temperature") < 36) | (get("temperature") > 38))
+
+    # Tachycardia ------------------------------------------------------------
+    df["Tachy"] = _binary_flag(df, get("pulse") > 90)
+
+    # Vasopressor support ----------------------------------------------------
+    vasop_cols = ["dobutamine", "epinephrine", "norepinephrine", "phenylephrine", "vasopressin"]
+    df["VasoSprt"] = _binary_flag(df, (df[vasop_cols] > 0).any(axis=1))
+
+    # Write out --------------------------------------------------------------
+    df.to_csv(output_path, index=False)
+    logger.info("Derangement flags added ➜ %s", output_path)
