@@ -170,9 +170,10 @@ def stage_preprocess(cfg: Dict[str, Any]) -> None:
         output_file_path=dataset_csv,
     )
 
-    # For compatibility – create a copy named *dataset_filtered.csv*
-    import shutil
-    shutil.copy(dataset_csv, dataset_filtered_csv)
+    # 2b) Filter out patients with < min_records (configurable, default 4) --
+    from Libs.Utils import preprocessor as _prep  # avoid name shadowing
+    min_records = cfg.get("min_records", 4)
+    _prep.filter_by_min_records(dataset_csv, dataset_filtered_csv, min_records=min_records)
 
     # ------------------------------------------------------------------
     # 3) Fill missing values -------------------------------------------

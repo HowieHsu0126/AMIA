@@ -503,3 +503,40 @@ def add_derangement_flags(input_path: Union[str, Path], output_path: Union[str, 
     # Write out --------------------------------------------------------------
     df.to_csv(output_path, index=False)
     logger.info("Derangement flags added ➜ %s", output_path)
+
+def filter_by_min_records(
+    input_path: Union[str, Path],
+    output_path: Union[str, Path],
+    *,
+    min_records: int = 4,
+) -> None:
+    """Filter patients with fewer than *min_records* hourly rows.
+
+    The function auto‐detects the patient identifier column (``admission_id`` ⇢
+    ``stay_id`` ⇢ ``hadm_id``) and retains only those IDs whose row‐count in
+    *input_path* is **≥ min_records**.
+
+    Args:
+        input_path: Source CSV to read.
+        output_path: Destination CSV containing filtered rows.
+        min_records: Minimum number of rows (per patient ID) to keep.
+    """
+
+    df = pd.read_csv(input_path)
+
+    # Determine id column
+    id_col = None
+    for cand in ["admission_id", "stay_id", "hadm_id"]:
+        if cand in df.columns:
+            id_col = cand
+            break
+    if id_col is None:
+        raise KeyError("Could not find patient identifier column in %s" % input_path)
+
+    counts = df[id_col].value_counts()
+    keep_ids = counts[counts >= min_records].index
+
+    filtered = df[df[id_col].isin(keep_ids)].reset_index(drop=True)
+
+    filtered.to_csv(output_path, index=False)
+    logger.info("Filtered patients with < %d records – remaining rows: %d", min_records, len(filtered))

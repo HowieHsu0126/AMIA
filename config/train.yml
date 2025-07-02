@@ -14,3 +14,7 @@ model:
 
 device: cuda:3      # cuda | cpu | cuda:id etc.
 seed: 42
+
+processed_dir: Input/processed/
+resample_horizon: 24               # hours
+min_records: 4                    # minimum hourly rows per patient
