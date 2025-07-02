@@ -314,7 +314,21 @@ def stage_training(cfg: Dict[str, Any], tensor_path: Path, device: torch.device)
     output_dir = Path("Output")
     output_dir.mkdir(exist_ok=True)
     torch.save(model.state_dict(), output_dir / "model.pt")
-    torch.save(model.GC(threshold=True).cpu(), output_dir / "GC_matrix.pt")
+    gc_tensor = model.GC(threshold=False).cpu()  # save raw norms, not binary
+    gc_path = output_dir / "GC_matrix.pt"
+    torch.save(gc_tensor, gc_path)
+
+    # ------------------------------------------------------------------
+    # Optional: auto-export GraphML for downstream visualisation --------
+    # ------------------------------------------------------------------
+    try:
+        from Libs.Utils.gc_graph import export_graphml
+
+        graphml_path = export_graphml(gc_path, output_dir=output_dir / "Results")
+        logger.info("GC GraphML exported ➜ %s", graphml_path)
+    except Exception as exc:
+        logger.warning("GraphML export failed: %s", exc)
+
     logger.info("Training complete – artifacts saved to %s", output_dir)
 
 
